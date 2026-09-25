@@ -417,6 +417,24 @@ export function NavUser() {
         ) : (
           <div className="flex w-full items-center justify-between">
             <div className="flex items-center gap-2">
+              {data && data.connections.length > 1 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={handleAccountSwitch(ALL_INBOXES)}
+                      className={`hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border dark:bg-[#262626] ${
+                        activeConnection?.id === ALL_INBOXES
+                          ? 'bg-mainBlue! outline-mainBlue text-white outline outline-2'
+                          : ''
+                      }`}
+                    >
+                      <Layers className="size-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="text-muted-foreground text-xs">All inboxes</TooltipContent>
+                </Tooltip>
+              )}
+
               {data ? (
                 <>
                   {data.connections.slice(0, INLINE_ACCOUNTS).map((connection) => (
@@ -496,24 +514,6 @@ export function NavUser() {
                     <div className="bg-muted size-6 animate-pulse rounded-[5px]" />
                   </div>
                 </div>
-              )}
-
-              {data && data.connections.length > 1 && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={handleAccountSwitch(ALL_INBOXES)}
-                      className={`hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border dark:bg-[#262626] ${
-                        activeConnection?.id === ALL_INBOXES
-                          ? 'bg-mainBlue! outline-mainBlue text-white outline outline-2'
-                          : ''
-                      }`}
-                    >
-                      <Layers className="size-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="text-muted-foreground text-xs">All inboxes</TooltipContent>
-                </Tooltip>
               )}
 
               {isPro ? (
