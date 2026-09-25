@@ -16,9 +16,10 @@ use serde_json::{Value, json};
 
 pub const SCOPES: &str = "openid email profile https://www.googleapis.com/auth/gmail.modify";
 const API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
-/// How many recent threads to mirror on first sync.
-const INITIAL_THREADS: usize = 1500;
-const FETCH_CONCURRENCY: usize = 8;
+/// How many recent messages to mirror on first sync.
+const INITIAL_MESSAGES: usize = 3000;
+/// Keeps downloads under Gmail's per-user quota (15k units per minute, 5 per message).
+const FETCH_CONCURRENCY: usize = 4;
 /// Labels that only exist locally and must not be sent to Gmail.
 const LOCAL_LABELS: &[&str] = &[labels::SNOOZED, "MUTE"];
 
@@ -165,12 +166,18 @@ impl Gmail {
             }
             let resp = req.send().await?;
             let status = resp.status();
-            if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                attempt += 1;
-                if attempt <= 4 {
-                    tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt))).await;
+            let retryable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+            if retryable || status == StatusCode::FORBIDDEN {
+                let body = resp.text().await.unwrap_or_default();
+                // Gmail reports per-user quota exhaustion as 403 rateLimitExceeded.
+                let rate_limited = body.contains("ateLimitExceeded");
+                if (retryable || rate_limited) && attempt < 6 {
+                    attempt += 1;
+                    let delay = if rate_limited { 5_000 * 2u64.pow(attempt.min(4)) } else { 500 * 2u64.pow(attempt) };
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     continue;
                 }
+                return Err(GmailError { status: status.as_u16(), body }.into());
             }
             if status == StatusCode::NO_CONTENT {
                 return Ok(Value::Null);
@@ -409,21 +416,23 @@ impl Gmail {
         Ok(())
     }
 
+    /// Mirrors the most recent messages. Listing ids is cheap (5 units per 500), so a
+    /// retry after a failure only downloads what is still missing.
     async fn full_sync(&self) -> Result<()> {
         let profile = self.get("/profile", &[]).await?;
         let history_id = profile["historyId"].as_str().context("profile without historyId")?.to_string();
 
-        let mut thread_ids = Vec::new();
+        let mut ids = Vec::new();
         let mut page: Option<String> = None;
-        while thread_ids.len() < INITIAL_THREADS {
+        while ids.len() < INITIAL_MESSAGES {
             let mut query = vec![("maxResults", "500".to_string()), ("includeSpamTrash", "true".into())];
             if let Some(p) = &page {
                 query.push(("pageToken", p.clone()));
             }
-            let v = self.get("/threads", &query).await?;
-            for t in v["threads"].as_array().cloned().unwrap_or_default() {
-                if let Some(id) = t["id"].as_str() {
-                    thread_ids.push(id.to_string());
+            let v = self.get("/messages", &query).await?;
+            for m in v["messages"].as_array().cloned().unwrap_or_default() {
+                if let Some(id) = m["id"].as_str() {
+                    ids.push(id.to_string());
                 }
             }
             page = v["nextPageToken"].as_str().map(str::to_string);
@@ -431,14 +440,27 @@ impl Gmail {
                 break;
             }
         }
-        thread_ids.truncate(INITIAL_THREADS);
-        tracing::info!(conn = %self.conn_id, threads = thread_ids.len(), "gmail full sync");
+        ids.truncate(INITIAL_MESSAGES);
+        let known: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM messages WHERE connection_id = $1 AND id = ANY($2)",
+        )
+        .bind(&self.conn_id)
+        .bind(&ids)
+        .fetch_all(&self.state.db)
+        .await?;
+        let missing: Vec<String> = ids.into_iter().filter(|id| !known.contains(id)).collect();
+        tracing::info!(conn = %self.conn_id, missing = missing.len(), "gmail full sync");
 
-        futures::stream::iter(thread_ids)
-            .map(|tid| async move { self.sync_thread(&tid).await })
+        let failures: Vec<anyhow::Error> = futures::stream::iter(missing)
+            .map(|id| async move { self.store_message(&id).await })
             .buffer_unordered(FETCH_CONCURRENCY)
-            .try_collect::<Vec<_>>()
-            .await?;
+            .filter_map(|r| async move { r.err() })
+            .collect()
+            .await;
+        if let Some(first) = failures.into_iter().next() {
+            // Keep the history id unset so the next run fetches what is still missing.
+            return Err(first.context("some messages could not be downloaded yet"));
+        }
         self.save_history_id(&history_id).await
     }
 
