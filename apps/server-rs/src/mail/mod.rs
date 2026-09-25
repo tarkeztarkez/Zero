@@ -127,6 +127,11 @@ pub async fn connection_info(state: &AppState, conn_id: &str) -> Result<Connecti
 pub async fn send(state: &AppState, conn_id: &str, msg: &OutgoingMessage) -> Result<()> {
     let info = connection_info(state, conn_id).await?;
     let from = Sender { name: info.name.clone(), email: info.email.clone() };
+    let mut msg = msg.clone();
+    if msg.subject.trim().is_empty() {
+        msg.subject = subject_from_thread(state, conn_id, &msg).await?.unwrap_or_default();
+    }
+    let msg = &msg;
     let composed = compose::build(msg, &from)?;
     match Driver::load(state, conn_id).await? {
         Driver::Gmail(g) => {
@@ -155,6 +160,28 @@ pub async fn send(state: &AppState, conn_id: &str, msg: &OutgoingMessage) -> Res
         }
     }
     Ok(())
+}
+
+/// Replies and forwards sent without a subject reuse the thread's, so they stay in the
+/// thread and are recognisable in Sent.
+async fn subject_from_thread(state: &AppState, conn_id: &str, msg: &OutgoingMessage) -> Result<Option<String>> {
+    let Some(thread) = msg.thread_id.as_deref().filter(|t| !t.is_empty()) else { return Ok(None) };
+    let subject: Option<String> = sqlx::query_scalar(
+        "SELECT data->>'subject' FROM messages WHERE connection_id = $1 AND thread_id = $2 ORDER BY received_on LIMIT 1",
+    )
+    .bind(conn_id)
+    .bind(thread)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(subject) = subject.filter(|s| !s.is_empty() && s != "(no subject)") else { return Ok(None) };
+    let forward = msg.is_forward.unwrap_or(false);
+    let lower = subject.to_lowercase();
+    let already = if forward { lower.starts_with("fwd:") || lower.starts_with("fw:") } else { lower.starts_with("re:") };
+    Ok(Some(match (already, forward) {
+        (true, _) => subject,
+        (false, true) => format!("Fwd: {subject}"),
+        (false, false) => format!("Re: {subject}"),
+    }))
 }
 
 pub async fn aliases(state: &AppState, conn_id: &str) -> Result<Vec<Value>> {

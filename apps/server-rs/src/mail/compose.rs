@@ -48,7 +48,8 @@ pub fn build(msg: &OutgoingMessage, from: &Sender) -> Result<Composed> {
     let mut html = msg.message.clone();
     if msg.is_forward.unwrap_or(false) {
         if let Some(original) = msg.original_message.as_deref().filter(|o| !o.is_empty()) {
-            html.push_str("<br><br>---------- Forwarded message ---------<br>");
+            // The frontend already adds the "Forwarded message" header block.
+            html.push_str("<br>");
             html.push_str(original);
         }
     }

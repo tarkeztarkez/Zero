@@ -55,8 +55,8 @@ pub async fn upsert_message(db: &PgPool, conn: &str, m: NewMessage) -> Result<()
     .bind(m.received_on)
     .bind(&m.label_ids)
     .bind(&m.provider_ref)
-    .bind(serde_json::to_value(&m.data)?)
-    .bind(&m.search_text)
+    .bind(without_nul(serde_json::to_value(&m.data)?))
+    .bind(m.search_text.replace('\0', ""))
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -66,6 +66,16 @@ pub async fn upsert_message(db: &PgPool, conn: &str, m: NewMessage) -> Result<()
         recompute_thread(db, conn, &prev).await?;
     }
     Ok(())
+}
+
+/// Postgres rejects NUL characters in text and jsonb; some emails contain them.
+fn without_nul(v: Value) -> Value {
+    match v {
+        Value::String(s) if s.contains('\0') => Value::String(s.replace('\0', "")),
+        Value::Array(a) => Value::Array(a.into_iter().map(without_nul).collect()),
+        Value::Object(o) => Value::Object(o.into_iter().map(|(k, v)| (k, without_nul(v))).collect()),
+        other => other,
+    }
 }
 
 /// Refreshes a thread's labels and date from its messages; deletes it when empty.
