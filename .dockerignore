@@ -51,3 +51,9 @@ apps/mail/scripts.ts
 .github
 .devcontainer
 .env.example
+
+# self-host image
+**/node_modules
+**/target
+**/build
+.git

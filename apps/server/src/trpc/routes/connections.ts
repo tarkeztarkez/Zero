@@ -5,6 +5,25 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
 export const connectionsRouter = router({
+  // Implemented by apps/server-rs; declared here so the frontend gets its types.
+  addImap: privateProcedure
+    .input(
+      z.object({
+        email: z.string(),
+        name: z.string().optional(),
+        password: z.string(),
+        username: z.string(),
+        imapHost: z.string(),
+        imapPort: z.number(),
+        imapSecurity: z.enum(['tls', 'starttls', 'none']),
+        smtpHost: z.string(),
+        smtpPort: z.number(),
+        smtpSecurity: z.enum(['tls', 'starttls', 'none']),
+      }),
+    )
+    .mutation(async (): Promise<{ success: boolean; connectionId: string }> => {
+      throw new TRPCError({ code: 'METHOD_NOT_SUPPORTED' });
+    }),
   list: privateProcedure
     .use(
       createRateLimiterMiddleware({

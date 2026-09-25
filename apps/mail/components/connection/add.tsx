@@ -10,12 +10,13 @@ import { useBilling } from '@/hooks/use-billing';
 import { emailProviders } from '@/lib/constants';
 import { authClient } from '@/lib/auth-client';
 import { Plus, UserPlus } from 'lucide-react';
+import { ImapConnectForm } from './imap-form';
 import { useLocation } from 'react-router';
 import { m } from '@/paraglide/messages';
 import { motion } from 'motion/react';
 import { Button } from '../ui/button';
 import { cn } from '@/lib/utils';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
 export const AddConnectionDialog = ({
@@ -34,6 +35,7 @@ export const AddConnectionDialog = ({
     return (connections?.unlimited && !connections?.remaining) || (connections?.remaining ?? 0) > 0;
   }, [connections]);
   const pathname = useLocation().pathname;
+  const [showImap, setShowImap] = useState(false);
 
   const handleUpgrade = async () => {
     if (attach) {
@@ -51,7 +53,12 @@ export const AddConnectionDialog = ({
   };
 
   return (
-    <Dialog onOpenChange={onOpenChange}>
+    <Dialog
+      onOpenChange={(open) => {
+        if (!open) setShowImap(false);
+        onOpenChange?.(open);
+      }}
+    >
       <DialogTrigger asChild>
         {children || (
           <Button
@@ -132,12 +139,14 @@ export const AddConnectionDialog = ({
             <Button
               variant="outline"
               className="h-24 w-full flex-col items-center justify-center gap-2 border-dashed"
+              onClick={() => setShowImap((v) => !v)}
             >
               <Plus className="h-12 w-12" />
-              <span className="text-xs">{m['pages.settings.connections.moreComingSoon']()}</span>
+              <span className="text-xs">IMAP / other mail</span>
             </Button>
           </motion.div>
         </motion.div>
+        {showImap && <ImapConnectForm />}
       </DialogContent>
     </Dialog>
   );

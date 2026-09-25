@@ -1,5 +1,4 @@
 import { paraglideVitePlugin } from '@inlang/paraglide-js';
-import { cloudflare } from '@cloudflare/vite-plugin';
 import { reactRouter } from '@react-router/dev/vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 import oxlintPlugin from 'vite-plugin-oxlint';
@@ -16,7 +15,6 @@ export default defineConfig({
   plugins: [
     oxlintPlugin(),
     reactRouter(),
-    cloudflare(),
     babel({
       filter: /\.[jt]sx?$/,
       babelConfig: {
