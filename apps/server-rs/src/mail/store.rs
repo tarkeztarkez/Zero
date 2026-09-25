@@ -320,8 +320,14 @@ pub struct ListParams {
     pub max_results: i64,
 }
 
-pub async fn list_threads(db: &PgPool, conn: &str, p: &ListParams) -> Result<Value> {
-    let mut b = SqlBuilder { sql: String::from("SELECT t.id, t.latest_received_on FROM threads t WHERE t.connection_id = $1"), binds: vec![], next: 2 };
+/// Lists threads of one or more mailboxes, newest first.
+/// With `qualify`, ids are returned as "connection~thread" for the unified inbox.
+pub async fn list_threads(db: &PgPool, conns: &[String], qualify: bool, p: &ListParams) -> Result<Value> {
+    let mut b = SqlBuilder {
+        sql: String::from("SELECT t.connection_id, t.id, t.latest_received_on FROM threads t WHERE t.connection_id = ANY($1)"),
+        binds: vec![],
+        next: 2,
+    };
     let has = |label: &str| {
         format!(" AND EXISTS (SELECT 1 FROM thread_labels l WHERE l.connection_id = t.connection_id AND l.thread_id = t.id AND l.label_id = '{label}')")
     };
@@ -382,14 +388,18 @@ pub async fn list_threads(db: &PgPool, conn: &str, p: &ListParams) -> Result<Val
             BindValue::Text(format!("%{}%", search.text)),
         );
     }
-    if let Some((ts, id)) = parse_cursor(&p.cursor) {
-        b.clause(" AND (t.latest_received_on, t.id) < ($?", BindValue::Time(ts));
+    if let Some((ts, conn, id)) = parse_cursor(&p.cursor) {
+        b.clause(" AND (t.latest_received_on, t.connection_id, t.id) < ($?", BindValue::Time(ts));
+        b.clause(", $?", BindValue::Text(conn));
         b.clause(", $?)", BindValue::Text(id));
     }
-    b.sql.push_str(&format!(" ORDER BY t.latest_received_on DESC, t.id DESC LIMIT {}", p.max_results));
+    b.sql.push_str(&format!(
+        " ORDER BY t.latest_received_on DESC, t.connection_id DESC, t.id DESC LIMIT {}",
+        p.max_results
+    ));
     let SqlBuilder { sql, binds, .. } = b;
 
-    let mut q = sqlx::query_as::<_, (String, DateTime<Utc>)>(sqlx::AssertSqlSafe(sql)).bind(conn);
+    let mut q = sqlx::query_as::<_, (String, String, DateTime<Utc>)>(sqlx::AssertSqlSafe(sql)).bind(conns);
     for b in binds {
         q = match b {
             BindValue::Text(s) => q.bind(s),
@@ -399,12 +409,19 @@ pub async fn list_threads(db: &PgPool, conn: &str, p: &ListParams) -> Result<Val
     let rows = q.fetch_all(db).await?;
 
     let next_page = if rows.len() as i64 == p.max_results {
-        rows.last().map(|(id, ts)| format!("{}|{}", ts.to_rfc3339(), id))
+        rows.last().map(|(conn, id, ts)| format!("{}|{}|{}", ts.to_rfc3339(), conn, id))
     } else {
         None
     };
+    let threads: Vec<Value> = rows
+        .iter()
+        .map(|(conn, id, _)| {
+            let id = if qualify { format!("{conn}~{id}") } else { id.clone() };
+            json!({ "id": id, "historyId": null })
+        })
+        .collect();
     Ok(json!({
-        "threads": rows.iter().map(|(id, _)| json!({ "id": id, "historyId": null })).collect::<Vec<_>>(),
+        "threads": threads,
         "nextPageToken": next_page,
     }))
 }
@@ -429,9 +446,10 @@ impl SqlBuilder {
     }
 }
 
-fn parse_cursor(cursor: &str) -> Option<(DateTime<Utc>, String)> {
-    let (ts, id) = cursor.split_once('|')?;
-    Some((DateTime::parse_from_rfc3339(ts).ok()?.with_timezone(&Utc), id.to_string()))
+fn parse_cursor(cursor: &str) -> Option<(DateTime<Utc>, String, String)> {
+    let mut parts = cursor.splitn(3, '|');
+    let ts = DateTime::parse_from_rfc3339(parts.next()?).ok()?.with_timezone(&Utc);
+    Some((ts, parts.next()?.to_string(), parts.next()?.to_string()))
 }
 
 /// A small subset of Gmail search syntax, applied to the local mirror.

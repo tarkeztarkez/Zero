@@ -9,6 +9,7 @@ import {
   BanknoteIcon,
   RefreshCcw,
   Trash2,
+  Layers,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -39,6 +40,9 @@ import { useQueryState } from 'nuqs';
 import { Button } from './button';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+
+// Pseudo connection id the backend uses for the unified inbox.
+const ALL_INBOXES = 'all';
 
 const bytesToMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
 
@@ -137,8 +141,8 @@ export function NavUser() {
       setLoading(true, m['common.navUser.switchingAccounts']());
       setThreadId(null);
       await setDefaultConnection({ connectionId });
-      queryClient.clear();
-      await queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() });
+      // Query keys do not include the mailbox, so drop everything and refetch what is on screen.
+      await queryClient.resetQueries();
     } catch (error) {
       console.error('Error switching accounts:', error);
       toast.error(m['common.navUser.failedToSwitchAccount']());
@@ -392,6 +396,11 @@ export function NavUser() {
                   }`}
                 >
                   <div className="relative">
+                    {activeAccount.id === ALL_INBOXES ? (
+                      <div className="bg-mainBlue flex size-7 items-center justify-center rounded-[5px] text-white">
+                        <Layers className="size-4" />
+                      </div>
+                    ) : (
                     <Avatar className="size-7 rounded-[5px]">
                       <AvatarImage
                         className="rounded-[5px]"
@@ -407,6 +416,7 @@ export function NavUser() {
                           .slice(0, 2)}
                       </AvatarFallback>
                     </Avatar>
+                    )}
                     {activeAccount.id === activeConnection?.id && data.connections.length > 1 && (
                       <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-[#141414]" />
                     )}
@@ -458,11 +468,11 @@ export function NavUser() {
                 </Tooltip>
               ))}
 
-              {otherConnections.length > 3 && (
+              {otherConnections.length > 2 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button className="hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px]">
-                      <span className="text-[10px]">+{otherConnections.length - 3}</span>
+                      <span className="text-[10px]">+{otherConnections.length - 2}</span>
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent
@@ -471,7 +481,7 @@ export function NavUser() {
                     side={'bottom'}
                     sideOffset={8}
                   >
-                    {otherConnections.slice(3).map((connection) => (
+                    {otherConnections.slice(2).map((connection) => (
                       <DropdownMenuItem
                         key={connection.id}
                         onClick={handleAccountSwitch(connection.id)}
@@ -506,6 +516,20 @@ export function NavUser() {
                     ))}
                   </DropdownMenuContent>
                 </DropdownMenu>
+              )}
+
+              {data && data.connections.length > 1 && activeAccount?.id !== ALL_INBOXES && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={handleAccountSwitch(ALL_INBOXES)}
+                      className="hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border dark:bg-[#262626]"
+                    >
+                      <Layers className="size-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="text-muted-foreground text-xs">All inboxes</TooltipContent>
+                </Tooltip>
               )}
 
               {isPro ? (

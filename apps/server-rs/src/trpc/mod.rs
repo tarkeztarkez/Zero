@@ -42,6 +42,80 @@ impl Ctx {
         .await?;
         id.ok_or_else(|| AppError::NotFound("No email connections".into()))
     }
+
+    pub async fn user_connections(&self) -> AppResult<Vec<String>> {
+        let user = self.user()?;
+        Ok(sqlx::query_scalar("SELECT id FROM connections WHERE user_id = $1 ORDER BY created_at")
+            .bind(&user.id)
+            .fetch_all(&self.state.db)
+            .await?)
+    }
+
+    /// Either the selected mailbox or, in the unified inbox, all of them.
+    pub async fn scope(&self) -> AppResult<Scope> {
+        let user = self.user()?;
+        if user.default_connection_id.as_deref() == Some(ALL_INBOXES) {
+            let conns = self.user_connections().await?;
+            if conns.len() > 1 {
+                return Ok(Scope::All(conns));
+            }
+        }
+        Ok(Scope::One(self.active_connection().await?))
+    }
+
+    /// Splits a unified-inbox id ("connection~id"); plain ids belong to the active mailbox.
+    pub async fn resolve(&self, id: &str) -> AppResult<Resolved> {
+        if let Some((conn, raw)) = id.split_once('~') {
+            if self.user_connections().await?.iter().any(|c| c == conn) {
+                return Ok(Resolved { conn: conn.to_string(), id: raw.to_string(), qualified: true });
+            }
+        }
+        Ok(Resolved { conn: self.active_connection().await?, id: id.to_string(), qualified: false })
+    }
+
+    /// Groups ids by mailbox.
+    pub async fn group(&self, ids: &[String]) -> AppResult<Vec<(String, Vec<String>)>> {
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        for id in ids {
+            let r = self.resolve(id).await?;
+            match out.iter_mut().find(|(c, _)| *c == r.conn) {
+                Some((_, list)) => list.push(r.id),
+                None => out.push((r.conn, vec![r.id])),
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Pseudo connection id selecting the unified inbox.
+pub const ALL_INBOXES: &str = "all";
+
+pub enum Scope {
+    One(String),
+    All(Vec<String>),
+}
+
+impl Scope {
+    pub fn connections(&self) -> Vec<String> {
+        match self {
+            Scope::One(c) => vec![c.clone()],
+            Scope::All(c) => c.clone(),
+        }
+    }
+
+    pub fn is_all(&self) -> bool {
+        matches!(self, Scope::All(_))
+    }
+}
+
+pub struct Resolved {
+    pub conn: String,
+    pub id: String,
+    pub qualified: bool,
+}
+
+pub fn qualify(conn: &str, id: &str) -> String {
+    format!("{conn}~{id}")
 }
 
 /// A procedure result: the JSON payload plus optional superjson metadata.
