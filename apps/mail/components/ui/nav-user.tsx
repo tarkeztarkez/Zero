@@ -22,9 +22,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useActiveConnection, useConnections } from '@/hooks/use-connections';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useDoState } from '@/components/mail/use-do-state';
-import { useLoading } from '../context/loading-context';
 import { signOut, useSession } from '@/lib/auth-client';
 import { AddConnectionDialog } from '../connection/add';
 import { CircleCheck, ThreeDots } from '../icons/icons';
@@ -43,6 +42,29 @@ import { toast } from 'sonner';
 
 // Pseudo connection id the backend uses for the unified inbox.
 const ALL_INBOXES = 'all';
+// Accounts shown as avatars before the overflow menu.
+const INLINE_ACCOUNTS = 3;
+
+function AccountAvatar({
+  connection,
+}: {
+  connection: { name?: string | null; email: string; picture?: string | null };
+}) {
+  const label = connection.name || connection.email;
+  return (
+    <Avatar className="size-7 rounded-[5px]">
+      <AvatarImage className="rounded-[5px]" src={connection.picture || undefined} alt={label} />
+      <AvatarFallback className="rounded-[5px] text-[10px]">
+        {label
+          .split(' ')
+          .map((n) => n[0])
+          .join('')
+          .toUpperCase()
+          .slice(0, 2)}
+      </AvatarFallback>
+    </Avatar>
+  );
+}
 
 const bytesToMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
 
@@ -109,7 +131,6 @@ export function NavUser() {
   const { data: activeConnection, refetch: refetchActiveConnection } = useActiveConnection();
   const [, setPricingDialog] = useQueryState('pricingDialog');
   const [category] = useQueryState('category', { defaultValue: 'All Mail' });
-  const { setLoading } = useLoading();
   const [{ isSyncing, syncingFolders, storageSize, shards }] = useDoState();
 
   const getSettingsHref = useCallback(() => {
@@ -137,19 +158,34 @@ export function NavUser() {
   const handleAccountSwitch = (connectionId: string) => async () => {
     if (connectionId === activeConnection?.id) return;
 
+    const defaultKey = trpc.connections.getDefault.queryKey();
+    const previous = queryClient.getQueryData(defaultKey);
+    const target =
+      connectionId === ALL_INBOXES
+        ? {
+            id: ALL_INBOXES,
+            email: 'All inboxes',
+            name: 'All inboxes',
+            picture: null,
+            providerId: 'all',
+            createdAt: new Date(),
+          }
+        : data?.connections.find((c) => c.id === connectionId);
+
+    // Highlight the new account right away; mail reloads in the background.
+    setThreadId(null);
+    queryClient.setQueryData(defaultKey, target as typeof previous);
     try {
-      setLoading(true, m['common.navUser.switchingAccounts']());
-      setThreadId(null);
       await setDefaultConnection({ connectionId });
-      // Query keys do not include the mailbox, so drop everything and refetch what is on screen.
-      await queryClient.resetQueries();
+      // Query keys do not include the mailbox, so reset everything except the selection.
+      void queryClient.resetQueries({
+        predicate: (query) => JSON.stringify(query.queryKey[0]) !== JSON.stringify(defaultKey[0]),
+      });
     } catch (error) {
       console.error('Error switching accounts:', error);
+      queryClient.setQueryData(defaultKey, previous);
       toast.error(m['common.navUser.failedToSwitchAccount']());
-
       await refetchActiveConnection();
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -165,10 +201,6 @@ export function NavUser() {
     });
   };
 
-  const otherConnections = useMemo(() => {
-    if (!data || !activeAccount) return [];
-    return data.connections.filter((connection) => connection.id !== activeAccount?.id);
-  }, [data, activeAccount]);
 
   const handleThemeToggle = () => {
     setTheme(theme === 'dark' ? 'light' : 'dark');
@@ -385,43 +417,79 @@ export function NavUser() {
         ) : (
           <div className="flex w-full items-center justify-between">
             <div className="flex items-center gap-2">
-              {data && activeAccount ? (
-                <div
-                  key={activeAccount.id}
-                  onClick={handleAccountSwitch(activeAccount.id)}
-                  className={`flex cursor-pointer items-center ${
-                    activeAccount.id === activeConnection?.id && data.connections.length > 1
-                      ? 'outline-mainBlue rounded-[5px] outline outline-2'
-                      : ''
-                  }`}
-                >
-                  <div className="relative">
-                    {activeAccount.id === ALL_INBOXES ? (
-                      <div className="bg-mainBlue flex size-7 items-center justify-center rounded-[5px] text-white">
-                        <Layers className="size-4" />
-                      </div>
-                    ) : (
-                    <Avatar className="size-7 rounded-[5px]">
-                      <AvatarImage
-                        className="rounded-[5px]"
-                        src={activeAccount.picture || undefined}
-                        alt={activeAccount.name || activeAccount.email}
-                      />
-                      <AvatarFallback className="rounded-[5px] text-[10px]">
-                        {(activeAccount.name || activeAccount.email)
-                          .split(' ')
-                          .map((n) => n[0])
-                          .join('')
-                          .toUpperCase()
-                          .slice(0, 2)}
-                      </AvatarFallback>
-                    </Avatar>
-                    )}
-                    {activeAccount.id === activeConnection?.id && data.connections.length > 1 && (
-                      <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-[#141414]" />
-                    )}
-                  </div>
-                </div>
+              {data ? (
+                <>
+                  {data.connections.slice(0, INLINE_ACCOUNTS).map((connection) => (
+                    <Tooltip key={connection.id}>
+                      <TooltipTrigger asChild>
+                        <div
+                          onClick={handleAccountSwitch(connection.id)}
+                          className={`flex cursor-pointer items-center ${
+                            connection.id === activeConnection?.id && data.connections.length > 1
+                              ? 'outline-mainBlue rounded-[5px] outline outline-2'
+                              : ''
+                          }`}
+                        >
+                          <div className="relative">
+                            <AccountAvatar connection={connection} />
+                            {connection.id === activeConnection?.id && data.connections.length > 1 && (
+                              <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-[#141414]" />
+                            )}
+                          </div>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="text-muted-foreground text-xs">
+                        {connection.email}
+                      </TooltipContent>
+                    </Tooltip>
+                  ))}
+
+                  {data.connections.length > INLINE_ACCOUNTS && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          className={`hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] ${
+                            data.connections
+                              .slice(INLINE_ACCOUNTS)
+                              .some((c) => c.id === activeConnection?.id)
+                              ? 'outline-mainBlue outline outline-2'
+                              : ''
+                          }`}
+                        >
+                          <span className="text-[10px]">
+                            +{data.connections.length - INLINE_ACCOUNTS}
+                          </span>
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        className="ml-3 min-w-56 bg-white font-medium dark:bg-[#131313]"
+                        align="end"
+                        side={'bottom'}
+                        sideOffset={8}
+                      >
+                        {data.connections.slice(INLINE_ACCOUNTS).map((connection) => (
+                          <DropdownMenuItem
+                            key={connection.id}
+                            onClick={handleAccountSwitch(connection.id)}
+                            className="flex cursor-pointer items-center gap-3 py-1"
+                          >
+                            <AccountAvatar connection={connection} />
+                            <div className="-space-y-0.5">
+                              <p className="text-[12px]">{connection.name || connection.email}</p>
+                              {connection.name && (
+                                <p className="text-muted-foreground text-[11px]">
+                                  {connection.email.length > 25
+                                    ? `${connection.email.slice(0, 25)}...`
+                                    : connection.email}
+                                </p>
+                              )}
+                            </div>
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </>
               ) : (
                 <div className="flex cursor-pointer items-center">
                   <div className="relative">
@@ -429,101 +497,17 @@ export function NavUser() {
                   </div>
                 </div>
               )}
-              {otherConnections.slice(0, 2).map((connection) => (
-                <Tooltip key={connection.id}>
-                  <TooltipTrigger asChild>
-                    <div
-                      onClick={handleAccountSwitch(connection.id)}
-                      className={`flex cursor-pointer items-center ${
-                        connection.id === activeConnection?.id && otherConnections.length > 1
-                          ? 'outline-mainBlue rounded-[5px] outline outline-2'
-                          : ''
-                      }`}
-                    >
-                      <div className="relative">
-                        <Avatar className="size-7 rounded-[5px]">
-                          <AvatarImage
-                            className="rounded-[5px]"
-                            src={connection.picture || undefined}
-                            alt={connection.name || connection.email}
-                          />
-                          <AvatarFallback className="rounded-[5px] text-[10px]">
-                            {(connection.name || connection.email)
-                              .split(' ')
-                              .map((n) => n[0])
-                              .join('')
-                              .toUpperCase()
-                              .slice(0, 2)}
-                          </AvatarFallback>
-                        </Avatar>
-                        {connection.id === activeConnection?.id && otherConnections.length > 1 && (
-                          <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-black" />
-                        )}
-                      </div>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent className="text-muted-foreground text-xs">
-                    {connection.email}
-                  </TooltipContent>
-                </Tooltip>
-              ))}
 
-              {otherConnections.length > 2 && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button className="hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px]">
-                      <span className="text-[10px]">+{otherConnections.length - 2}</span>
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    className="ml-3 min-w-56 bg-white font-medium dark:bg-[#131313]"
-                    align="end"
-                    side={'bottom'}
-                    sideOffset={8}
-                  >
-                    {otherConnections.slice(2).map((connection) => (
-                      <DropdownMenuItem
-                        key={connection.id}
-                        onClick={handleAccountSwitch(connection.id)}
-                        className="flex cursor-pointer items-center gap-3 py-1"
-                      >
-                        <Avatar className="size-7 rounded-lg">
-                          <AvatarImage
-                            className="rounded-lg"
-                            src={connection.picture || undefined}
-                            alt={connection.name || connection.email}
-                          />
-                          <AvatarFallback className="rounded-lg text-[10px]">
-                            {(connection.name || connection.email)
-                              .split(' ')
-                              .map((n) => n[0])
-                              .join('')
-                              .toUpperCase()
-                              .slice(0, 2)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="-space-y-0.5">
-                          <p className="text-[12px]">{connection.name || connection.email}</p>
-                          {connection.name && (
-                            <p className="text-muted-foreground text-[11px]">
-                              {connection.email.length > 25
-                                ? `${connection.email.slice(0, 25)}...`
-                                : connection.email}
-                            </p>
-                          )}
-                        </div>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-
-              {data && data.connections.length > 1 && activeAccount?.id !== ALL_INBOXES && (
+              {data && data.connections.length > 1 && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       onClick={handleAccountSwitch(ALL_INBOXES)}
-                      className="hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border dark:bg-[#262626]"
+                      className={`hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border dark:bg-[#262626] ${
+                        activeConnection?.id === ALL_INBOXES
+                          ? 'bg-mainBlue! outline-mainBlue text-white outline outline-2'
+                          : ''
+                      }`}
                     >
                       <Layers className="size-4" />
                     </button>
