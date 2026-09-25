@@ -3,14 +3,19 @@
 # which Dockerfile.coolify downloads.
 set -euo pipefail
 APP_URL="${APP_URL:-https://mail.marcinszyda.com}"
+# The Coolify host is an ARM server.
+RUST_TARGET="${RUST_TARGET:-aarch64-unknown-linux-gnu}"
 TAG="selfhost-$(date +%Y%m%d-%H%M%S)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-docker build -f Dockerfile.selfhost --build-arg APP_URL="$APP_URL" -t zero-selfhost:release .
-cid="$(docker create zero-selfhost:release)"
-docker cp "$cid:/app/zero-server" "$WORK/"
-docker cp "$cid:/app/public" "$WORK/"
+docker build -f Dockerfile.selfhost --target web --build-arg APP_URL="$APP_URL" -t zero-selfhost:web .
+docker build -f Dockerfile.selfhost --target api --build-arg RUST_TARGET="$RUST_TARGET" -t zero-selfhost:api .
+cid="$(docker create zero-selfhost:api)"
+docker cp "$cid:/zero-server" "$WORK/"
+docker rm "$cid" >/dev/null
+cid="$(docker create zero-selfhost:web)"
+docker cp "$cid:/src/apps/mail/build/client" "$WORK/public"
 docker rm "$cid" >/dev/null
 tar -C "$WORK" -czf "$WORK/zero-mail-selfhost.tar.gz" zero-server public
 
